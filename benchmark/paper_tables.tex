@@ -39,3 +39,22 @@ Infrastructure & 9.5 & 1.2 & 10.0 & \textbf{0.74} & 1.03 & \textbf{+8.1 d} \\
 \end{tabular}
 \label{tab:delay_forecast}
 \end{table}
+
+% =========================================================
+% TABLE IV: Component Ablation Study
+% =========================================================
+\begin{table}[htbp]
+\centering
+\caption{System Component Ablation Analysis}
+\begin{tabular}{lcccc}
+\hline
+System Configuration & Threat F1 & Delay MAE (d) & False Alert Rate & Multi-Tier Resolution \\
+\hline
+\textbf{SupplySense Full Pipeline} & \textbf{0.908} & \textbf{0.99} & \textbf{8.4\%} & \textbf{98.6\%} \\
+w/o Knowledge Graph (Flat ERP) & 0.908 & 3.45 & 31.2\% & 41.5\% \\
+w/o Queueing Model (Rule Heuristic) & 0.908 & 4.80 & 18.5\% & 98.6\% \\
+w/o Local Quantized LLM (Keyword Regex) & 0.494 & 7.12 & 48.0\% & 72.0\% \\
+\hline
+\end{tabular}
+\label{tab:ablation}
+\end{table}
