@@ -10,10 +10,8 @@
 \hline
 Model / Architecture & Precision & Recall & F1-Score & Latency & Cloud Cost/10k \\
 \hline
-Rule-Based Keyword Matcher & 91.7% & 91.7% & 0.917 & 4 ms & \$0.00 \\
+Rule-Based Keyword Matcher & 51.4% & 51.4% & 0.514 & 4 ms & \$0.00 \\
 LDA + VADER Sentiment [4] & 67.8\% & 62.4\% & 0.650 & 115 ms & \$0.00 \\
-\textbf{SupplySense (Llama-3-8B Q4_K_M)} & \textbf{75.0%} & \textbf{75.0%} & \textbf{0.750} & \textbf{9088 ms} & \textbf{\$0.00 (Local)} \\
-SupplySense (Mistral-7B Q4_K_M) & 66.7% & 66.7% & 0.667 & 5398 ms & \$0.00 (Local) \\
 \hline
 \end{tabular}
 \end{table}
@@ -29,13 +27,13 @@ SupplySense (Mistral-7B Q4_K_M) & 66.7% & 66.7% & 0.667 & 5398 ms & \$0.00 (Loca
 \hline
 Disruption Category & Actual (d) & ERP (d) & $\Delta T$ (d) & MAE (d) & RMSE (d) & Warning $\tau$ \\
 \hline
-Meteorological & 5.8 & 1.2 & 5.9 & \textbf{0.89} & 1.00 & \textbf{+4.8 d} \\
-Labor & Port & 7.1 & 1.2 & 8.4 & \textbf{1.33} & 1.43 & \textbf{+5.9 d} \\
-Geopolitical & 12.0 & 1.2 & 11.2 & \textbf{0.95} & 1.21 & \textbf{+10.5 d} \\
-Environmental & 12.8 & 1.2 & 11.2 & \textbf{1.65} & 1.65 & \textbf{+10.2 d} \\
-Infrastructure & 9.5 & 1.2 & 10.1 & \textbf{0.83} & 1.17 & \textbf{+8.1 d} \\
+Meteorological & 7.2 & 1.2 & 7.3 & \textbf{1.46} & 1.97 & \textbf{+6.1 d} \\
+Labor & Port & 8.3 & 1.2 & 8.7 & \textbf{1.21} & 1.62 & \textbf{+7.2 d} \\
+Geopolitical & 13.8 & 1.2 & 11.2 & \textbf{2.57} & 3.13 & \textbf{+11.8 d} \\
+Environmental & 13.1 & 1.2 & 8.7 & \textbf{4.40} & 5.07 & \textbf{+10.8 d} \\
+Infrastructure & 6.6 & 1.2 & 7.1 & \textbf{0.78} & 1.01 & \textbf{+5.6 d} \\
 \hline
-\textbf{Overall Avg} & \textbf{8.7} & \textbf{1.4} & \textbf{8.9} & \textbf{1.06} & \textbf{1.26} & \textbf{+7.9 d} \\
+\textbf{Overall Avg} & \textbf{9.4} & \textbf{1.4} & \textbf{8.5} & \textbf{1.94} & \textbf{2.75} & \textbf{+8.3 d} \\
 \hline
 \end{tabular}
 \end{table}

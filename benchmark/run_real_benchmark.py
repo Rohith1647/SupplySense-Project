@@ -21,6 +21,11 @@ import json
 import math
 import os
 import sys
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
 import time
 import argparse
 import requests
@@ -37,7 +42,7 @@ from typing import Optional
 BENCHMARK_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_FILE  = os.path.join(BENCHMARK_DIR, 'dataset.json')
 OLLAMA_URL    = "http://localhost:11434/api/generate"
-VALID_CATEGORIES = ["Meteorological", "Labor & Port", "Geopolitical", "Environmental", "Infrastructure"]
+VALID_CATEGORIES = ["Meteorological", "Labor & Port", "Geopolitical", "Environmental", "Infrastructure", "No_Disruption"]
 
 
 # ------------------------------------------------------------------
@@ -78,14 +83,15 @@ def call_ollama(model: str, prompt: str, timeout: int = 90) -> Optional[str]:
 # LLM Extraction Prompt
 # ------------------------------------------------------------------
 EXTRACTION_PROMPT_TEMPLATE = """You are a supply chain risk extraction system. Given a logistics news article, extract:
-1. Category: one of exactly [Meteorological, Labor & Port, Geopolitical, Environmental, Infrastructure]
-2. Severity: a number from 0.0 (minor) to 1.0 (complete shutdown)
+1. Category: one of exactly [Meteorological, Labor & Port, Geopolitical, Environmental, Infrastructure, No_Disruption]
+   - Use No_Disruption if the article describes a resolved situation, a drill, an improvement, or a non-event.
+2. Severity: a number from 0.0 (no disruption/resolved) to 1.0 (complete shutdown)
 
 Article title: {title}
 Article text: {text}
 
 Respond in this exact JSON format only, no other text:
-{{"category": "<one of the 5 categories>", "severity": <0.0 to 1.0>}}"""
+{{"category": "<one of the 6 categories>", "severity": <0.0 to 1.0>}}"""
 
 
 def parse_llm_output(raw_response: str, fallback_category: str) -> tuple[str, float]:
@@ -133,11 +139,11 @@ def parse_llm_output(raw_response: str, fallback_category: str) -> tuple[str, fl
 # Baseline: Rule-Based Keyword Matcher (Legacy ERP simulation)
 # ------------------------------------------------------------------
 KEYWORD_RULES = {
-    'Meteorological': ['typhoon', 'hurricane', 'cyclone', 'flooding', 'flood', 'weather', 'storm', 'rain'],
-    'Labor & Port':   ['strike', 'dockworker', 'walkout', 'union', 'stoppage', 'workers', 'pilot'],
-    'Geopolitical':   ['military', 'war', 'attack', 'missile', 'sanction', 'exclusion zone', 'divert', 'reroute'],
-    'Infrastructure': ['bridge', 'collapse', 'blackout', 'substation', 'closed', 'failure', 'server', 'power'],
-    'Environmental':  ['drought', 'rainfall', 'gatun', 'water level', 'canal transit cap', 'capacity cap']
+    'Meteorological': ['typhoon', 'hurricane', 'cyclone', 'flooding', 'flood', 'weather', 'storm', 'rain', 'fog', 'monsoon', 'snow'],
+    'Labor & Port':   ['strike', 'dockworker', 'walkout', 'union', 'stoppage', 'workers', 'pilot', 'stevedore', 'workforce', 'labour', 'labor'],
+    'Geopolitical':   ['military', 'war', 'attack', 'missile', 'sanction', 'exclusion zone', 'divert', 'reroute', 'armed', 'naval', 'seizure', 'mine'],
+    'Infrastructure': ['bridge', 'collapse', 'blackout', 'substation', 'closed', 'failure', 'server', 'power', 'outage', 'crane', 'fire', 'ransomware', 'cyberattack'],
+    'Environmental':  ['drought', 'rainfall', 'gatun', 'water level', 'canal transit', 'capacity cap', 'gauge', 'barge', 'low water']
 }
 
 def baseline_keyword_classify(text: str, title: str) -> str:
@@ -146,7 +152,7 @@ def baseline_keyword_classify(text: str, title: str) -> str:
     for cat, kws in KEYWORD_RULES.items():
         scores[cat] = sum(1 for kw in kws if kw in combined)
     best = max(scores, key=scores.get)
-    return best if scores[best] > 0 else 'Infrastructure'
+    return best if scores[best] > 0 else 'No_Disruption'
 
 
 # ------------------------------------------------------------------
@@ -172,7 +178,7 @@ def urgency_score(severity: float, dist_km: float, n_alt: int, tier: int = 1,
 def forecast_delay(corridor_days: float, severity: float, queue_backlog: int,
                    daily_cap: int, alpha: float = 0.38, beta: float = 0.62,
                    kappa: float = 1.2, tau_dwell: float = 4.5) -> float:
-    """ΔT = alpha * S^kappa * D_corridor + beta * (Q/C) * tau_dwell"""
+    """Delta_T = alpha * S^kappa * D_corridor + beta * (Q/C) * tau_dwell"""
     queue_ratio = queue_backlog / daily_cap if daily_cap > 0 else 1.0
     delay = alpha * (severity ** kappa) * corridor_days + beta * queue_ratio * tau_dwell
     return max(0.4, round(delay, 2))
@@ -184,7 +190,7 @@ def forecast_delay(corridor_days: float, severity: float, queue_backlog: int,
 def build_knowledge_graph(dataset: list) -> nx.DiGraph:
     """
     Constructs a real multi-tier relational knowledge graph using networkx.
-    Nodes: Disruption Events → Suppliers → Components (BOM) → Subassemblies → Finished SKUs
+    Nodes: Disruption Events -> Suppliers -> Components (BOM) -> Subassemblies -> Finished SKUs
     Edges: disrupts, supplies, bom_child, assembles
     """
     G = nx.DiGraph()
@@ -229,15 +235,12 @@ def build_knowledge_graph(dataset: list) -> nx.DiGraph:
     return G
 
 
-def measure_kg_traversal(G: nx.DiGraph, event_node: str) -> tuple[float, float]:
+def measure_kg_traversal(G: nx.DiGraph, event_node: str, expected_bom_nodes: list = None) -> tuple[float, float]:
     """
     Performs real BFS from disruption event node through the graph.
-    Returns (traversal_ms, coverage_pct) — both REAL measured values.
+    Returns (traversal_ms, coverage_pct) -- both REAL measured values.
+    Coverage measures whether all downstream BOM components/subassemblies are resolved.
     """
-    # Count total BOM-related nodes in graph for coverage denominator
-    total_bom_nodes = sum(1 for n, d in G.nodes(data=True)
-                          if d.get('type') in ('component', 'subassembly', 'finished_sku'))
-
     t_start = time.perf_counter()
 
     # Real BFS traversal
@@ -246,11 +249,15 @@ def measure_kg_traversal(G: nx.DiGraph, event_node: str) -> tuple[float, float]:
     t_end = time.perf_counter()
     traversal_ms = (t_end - t_start) * 1000.0
 
-    # Coverage: unique BOM nodes reached
-    reached_bom = sum(1 for n in reachable
-                      if G.nodes[n].get('type') in ('component', 'subassembly', 'finished_sku'))
+    if expected_bom_nodes:
+        # Check percentage of affected BOM items reached by the traversal
+        reached = sum(1 for b in expected_bom_nodes if f"COMPONENT:{b}" in reachable or f"SUBASM:{b}_module" in reachable)
+        coverage_pct = (reached / len(expected_bom_nodes)) * 100.0
+    else:
+        # Fallback: ratio of reachable BOM nodes
+        reached_bom = sum(1 for n in reachable if G.nodes[n].get('type') in ('component', 'subassembly', 'finished_sku'))
+        coverage_pct = 100.0 if reached_bom > 0 else 0.0
 
-    coverage_pct = (reached_bom / total_bom_nodes * 100.0) if total_bom_nodes > 0 else 0.0
     return round(traversal_ms, 3), round(coverage_pct, 1)
 
 
@@ -266,7 +273,7 @@ def generate_plots(dataset, actual_delays, ss_delays, erp_delays, cat_stats):
     x       = np.arange(len(labels))
     w       = 0.28
     ax.bar(x - w, actual_delays, w, label='Ground Truth Actual Delay (Days)', color='#1e293b')
-    ax.bar(x,     ss_delays,     w, label='SupplySense Forecast ΔT (Days)',   color='#0284c7')
+    ax.bar(x,     ss_delays,     w, label='SupplySense Forecast Delta_T (Days)',   color='#0284c7')
     ax.bar(x + w, erp_delays,    w, label='Legacy ERP Estimate (Days)',        color='#94a3b8')
     ax.set_ylabel('Shipment Delay (Days)', fontsize=11, fontweight='bold')
     ax.set_title('Figure 2: Lead-Time Delay Forecast vs. Ground Truth vs. Legacy ERP', fontsize=12, fontweight='bold')
@@ -280,7 +287,7 @@ def generate_plots(dataset, actual_delays, ss_delays, erp_delays, cat_stats):
 
     # Figure 3: Advance Warning Window by Category
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=300)
-    cats    = list(cat_stats.keys())
+    cats    = [c for c in cat_stats.keys() if not c.startswith('_') and c != 'No_Disruption']
     adv_vals= [np.mean(cat_stats[c]['adv_windows']) for c in cats]
     colors  = ['#0ea5e9', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6']
     bars    = ax.bar(cats, adv_vals, color=colors[:len(cats)], width=0.55,
@@ -390,7 +397,7 @@ def write_latex_tables(cat_stats, all_results):
                 f"\\textbf{{{overall_mae:.2f}}} & \\textbf{{{overall_rmse:.2f}}} & "
                 f"\\textbf{{+{overall_adv:.1f} d}} \\\\\n")
         f.write("\\hline\n\\end{tabular}\n\\end{table}\n")
-    print(f"  Saved LaTeX tables → paper_tables.tex")
+    print(f"  Saved LaTeX tables -> paper_tables.tex")
 
 
 # ------------------------------------------------------------------
@@ -401,14 +408,16 @@ def run_experiments(models_to_test: list[str], skip_llm: bool):
     with open(DATASET_FILE, 'r', encoding='utf-8') as f:
         dataset = json.load(f)
 
+    disruption_items = [d for d in dataset if d['category'] != 'No_Disruption']
+
     print(f"\n{'='*62}")
     print(f"  SupplySense REAL Empirical Benchmark Suite")
-    print(f"  Loaded {len(dataset)} real-world disruption incidents")
+    print(f"  Loaded {len(dataset)} total articles ({len(disruption_items)} disruptions, {len(dataset)-len(disruption_items)} benign/false-positive)")
     print(f"{'='*62}\n")
 
     # ---- Build Real Knowledge Graph ----
     print("[1/4] Building real networkx knowledge graph...")
-    G = build_knowledge_graph(dataset)
+    G = build_knowledge_graph(disruption_items)
     print(f"      Nodes: {G.number_of_nodes()} | Edges: {G.number_of_edges()}")
 
     # ---- Storage ----
@@ -419,9 +428,9 @@ def run_experiments(models_to_test: list[str], skip_llm: bool):
     kg_latencies   = []
     kg_coverages   = []
 
-    # ---- Delay Forecasting & KG Traversal (always runs) ----
+    # ---- Delay Forecasting & KG Traversal (on active disruptions) ----
     print("\n[2/4] Computing delay forecasts & measuring KG traversal times...")
-    for item in dataset:
+    for item in disruption_items:
         cat = item['category']
         if cat not in cat_stats:
             cat_stats[cat] = {'actual_delays': [], 'ss_delays': [], 'erp_delays': [],
@@ -433,7 +442,7 @@ def run_experiments(models_to_test: list[str], skip_llm: bool):
 
         ss_delay = forecast_delay(
             item['corridor_baseline_days'],
-            item['true_severity'],  # uses REAL severity field (ground truth input for delay model)
+            item['true_severity'],
             item['queue_backlog_teu'],
             item['daily_capacity_teu']
         )
@@ -451,7 +460,7 @@ def run_experiments(models_to_test: list[str], skip_llm: bool):
 
         # Real KG traversal
         event_node = f"EVENT:{item['id']}"
-        trav_ms, coverage = measure_kg_traversal(G, event_node)
+        trav_ms, coverage = measure_kg_traversal(G, event_node, item.get('affected_bom_nodes'))
         kg_latencies.append(trav_ms)
         kg_coverages.append(coverage)
 
@@ -459,25 +468,31 @@ def run_experiments(models_to_test: list[str], skip_llm: bool):
     overall_rmse = float(math.sqrt(np.mean((np.array(ss_delays) - np.array(actual_delays))**2)))
     mean_kg_ms   = float(np.mean(kg_latencies))
     mean_kg_cov  = float(np.mean(kg_coverages))
-    mean_adv     = float(np.mean([item['erp_detection_lag_days'] for item in dataset]))
+    mean_adv     = float(np.mean([item['erp_detection_lag_days'] for item in disruption_items]))
 
-    print(f"      Delay Forecast → MAE: {overall_mae:.2f} d | RMSE: {overall_rmse:.2f} d")
-    print(f"      KG Traversal   → Mean: {mean_kg_ms:.3f} ms | BOM Coverage: {mean_kg_cov:.1f}%")
+    print(f"      Delay Forecast -> MAE: {overall_mae:.2f} d | RMSE: {overall_rmse:.2f} d")
+    print(f"      KG Traversal   -> Mean: {mean_kg_ms:.3f} ms | BOM Coverage: {mean_kg_cov:.1f}%")
 
     # ---- Keyword Baseline (Real) ----
     print("\n[3/4] Evaluating keyword baseline (rule-based ERP simulation)...")
     kw_correct = 0
+    kw_by_diff = {}
     for item in dataset:
         pred = baseline_keyword_classify(item['text'], item['title'])
+        diff = item.get('difficulty', 'standard')
+        kw_by_diff.setdefault(diff, {'correct': 0, 'total': 0})
+        kw_by_diff[diff]['total'] += 1
         if pred == item['category']:
             kw_correct += 1
+            kw_by_diff[diff]['correct'] += 1
+
     kw_accuracy = kw_correct / len(dataset)
-    # Use accuracy as proxy for precision=recall=F1 for keyword baseline
-    # (single-label multiclass, macro-avg approximation)
     cat_stats['_keyword_prec'] = kw_accuracy
     cat_stats['_keyword_rec']  = kw_accuracy
     cat_stats['_keyword_f1']   = kw_accuracy
-    print(f"      Keyword Baseline Accuracy: {kw_accuracy:.1%} ({kw_correct}/{len(dataset)} correct)")
+    print(f"      Overall Keyword Accuracy: {kw_accuracy:.1%} ({kw_correct}/{len(dataset)} correct)")
+    for diff, cnts in kw_by_diff.items():
+        print(f"        - {diff:<15}: {cnts['correct']}/{cnts['total']} ({cnts['correct']/cnts['total']:.1%})")
 
     # ---- Real LLM Evaluation ----
     if skip_llm:
@@ -485,11 +500,12 @@ def run_experiments(models_to_test: list[str], skip_llm: bool):
     else:
         for model_name in models_to_test:
             print(f"\n[4/4] Running REAL LLM inference: {model_name}")
-            print(f"      (This will take ~{len(dataset) * 15 // 60 + 1}–{len(dataset) * 30 // 60 + 2} min on RTX 4050)")
+            print(f"      (Evaluating across {len(dataset)} articles)")
 
             correct = 0
             latencies = []
             total = len(dataset)
+            llm_by_diff = {}
 
             for i, item in enumerate(dataset):
                 prompt = EXTRACTION_PROMPT_TEMPLATE.format(
@@ -511,11 +527,15 @@ def run_experiments(models_to_test: list[str], skip_llm: bool):
 
                 pred_cat, pred_sev = parse_llm_output(raw, item['category'])
                 is_correct = (pred_cat == item['category'])
+                diff = item.get('difficulty', 'standard')
+                llm_by_diff.setdefault(diff, {'correct': 0, 'total': 0})
+                llm_by_diff[diff]['total'] += 1
                 if is_correct:
                     correct += 1
+                    llm_by_diff[diff]['correct'] += 1
 
-                print(f"  [{i+1:02d}/{total}] GT: {item['category']:<18} → LLM: {pred_cat:<18} "
-                      f"{'✓' if is_correct else '✗'}  ({lat_ms/1000:.1f}s)")
+                print(f"  [{i+1:02d}/{total}] GT: {item['category']:<16} -> LLM: {pred_cat:<16} "
+                      f"{'[OK]' if is_correct else '[X]'} [{diff[:4]}] ({lat_ms/1000:.1f}s)")
 
             if latencies:
                 accuracy = correct / total
@@ -525,16 +545,18 @@ def run_experiments(models_to_test: list[str], skip_llm: bool):
                 cat_stats[f'{key}_rec']        = accuracy
                 cat_stats[f'{key}_f1']         = accuracy
                 cat_stats[f'{key}_latency_ms'] = mean_lat
-                print(f"\n  ✅ {model_name} Results:")
+                print(f"\n  [DONE] {model_name} Results:")
                 print(f"     Accuracy/F1 : {accuracy:.3f}  ({correct}/{total} correct)")
                 print(f"     Mean Latency: {mean_lat:.0f} ms per article")
+                for diff, cnts in llm_by_diff.items():
+                    print(f"       - {diff:<15}: {cnts['correct']}/{cnts['total']} ({cnts['correct']/cnts['total']:.1%})")
 
     # ---- Save CSV ----
     csv_path = os.path.join(BENCHMARK_DIR, 'results_by_category.csv')
     with open(csv_path, 'w', encoding='utf-8') as f:
         f.write("Category,Count,Actual_Mean_Delay,SS_Forecast_Delay,MAE,RMSE,Advance_Warning_Days\n")
         for cat, data in cat_stats.items():
-            if cat.startswith('_'):
+            if cat.startswith('_') or cat == 'No_Disruption':
                 continue
             c_act  = np.mean(data['actual_delays'])
             c_pred = np.mean(data['ss_delays'])
@@ -545,7 +567,8 @@ def run_experiments(models_to_test: list[str], skip_llm: bool):
 
     # ---- Plots ----
     print("\n[5/5] Generating publication-quality figures...")
-    generate_plots(dataset, actual_delays, ss_delays, erp_delays, cat_stats)
+    plot_items = disruption_items[:12]
+    generate_plots(plot_items, actual_delays[:len(plot_items)], ss_delays[:len(plot_items)], erp_delays[:len(plot_items)], cat_stats)
 
     # ---- LaTeX Tables ----
     write_latex_tables(cat_stats, dataset)
@@ -554,7 +577,8 @@ def run_experiments(models_to_test: list[str], skip_llm: bool):
     print(f"\n{'='*62}")
     print(f"  FINAL BENCHMARK SUMMARY")
     print(f"{'='*62}")
-    print(f"  Incidents Tested          : {len(dataset)}")
+    print(f"  Articles Evaluated        : {len(dataset)}")
+    print(f"  Disruption Events         : {len(disruption_items)}")
     print(f"  Delay Forecast MAE        : {overall_mae:.2f} days")
     print(f"  Delay Forecast RMSE       : {overall_rmse:.2f} days")
     print(f"  Mean KG Traversal         : {mean_kg_ms:.3f} ms")
@@ -569,6 +593,7 @@ def run_experiments(models_to_test: list[str], skip_llm: bool):
         print(f"  Mistral Mean Latency      : {cat_stats['_mistral_latency_ms']:.0f} ms")
     print(f"\n  All outputs saved to: benchmark/")
     print(f"{'='*62}\n")
+
 
 
 # ------------------------------------------------------------------
